@@ -10,8 +10,13 @@ class CSVReader(object, metaclass=ABCMeta):
         self.file = file
         self.data_frame = None
 
-    def read_csv(self, csv_header=None):
-        self.data_frame = pd.read_csv(self.file, encode='utf-8', dtype=str, header=csv_header)
+    def read_csv(self, **kwargs):
+        if 'encoding' in kwargs:
+            kwargs.pop('encoding')
+        if 'dtype' in kwargs:
+            kwargs.pop('dtype')
+
+        self.data_frame = pd.read_csv(self.file, encoding='utf-8', dtype=object, **kwargs)
 
     @abstractmethod
     def to_mongodb(self): pass
@@ -43,9 +48,14 @@ class HeaderCSVReader(CSVReader):
 
     def to_mongodb(self):
         collection = db[self.__collection__]
-        record_json_str = self.data_frame.to_json(orient='records')
-        data = json.loads(record_json_str)
-        # db.stn_conf.remove({'line_no':01})
+        data = self.data_frame.to_dict(orient='records')
+
+        # all the data's columns are str type,
+        # need change 'area', 'seq' to int type before save to mongodb
+        for row in data:
+            row['seq'] = int(row['seq'])
+            row['area'] = int(row['area'])
+
         key = {'line_no': self.data_frame.iloc[0]['line_no']}
         if collection.count(key) > 0:
             collection.remove(key)
@@ -54,9 +64,9 @@ class HeaderCSVReader(CSVReader):
 
     def to_string(self):
         header_header = 'trip,type,direction,'
-        header_item = 'stop|%s|%s|%d|%d|%s'	 # stop|station name|station id|distance|A or D
+        header_item = 'stop|%s|%s|%s|%s|%s'	 # stop|station name|station id|distance|A or D
         header = header_header
-        for index, row in self.data_frame.iterrows:
+        for index, row in self.data_frame.iterrows():
             header_item1 = header_item % (row['stn_name'], row['stn_id'], row['distance'], row['area'], 'A')
             header_item2 = header_item % (row['stn_name'], row['stn_id'], row['distance'], row['area'], 'D')
 
@@ -67,44 +77,43 @@ class HeaderCSVReader(CSVReader):
         # header_list = header.split(',')
         return header
 
-    def __str__(self):
-        return self.to_string()
-
-    def __repr__(self):
-        return self.to_string()
+    __str__ = to_string
+    __repr__ = to_string
 
 
 class TrainPlanCSVReader(CSVReader):
     __collection__ = 'train_plan'
-    COLUMNS = ['line_no', 'date', 'A', 'B', 'trip', 'C', 'D', 'stn_id', 'arr_time', 'dep_time', 'direction']
+    COLUMNS = ['line_no', 'date', 'A', 'B', 'trip', 'terminal_stn', 'idx', 'stn_id', 'arr_time', 'dep_time', 'direction'
+               ]
 
     def __init__(self, file):
         super(TrainPlanCSVReader, self).__init__(file)
         self.load()
 
     def load(self):
-        self.read_csv()
+        self.read_csv(header=None)
         self.data_frame.columns = self.COLUMNS
 
     def to_string(self):
-        return '<{}>:{}'.format(type(self), self.file)
+        return '{}:{}'.format(type(self), self.file)
 
     def to_mongodb(self):
         collection = db[self.__collection__]
-        record_json_str = self.data_frame.to_json(orient='records')
-        data = json.loads(record_json_str)
-        # db.stn_conf.remove({'line_no':01})
+        data = self.data_frame.to_dict(orient='records')
+
+        # all the data's columns are str type,
+        # need change 'idx' to int type before save to mongodb
+        for row in data:
+            row['idx'] = int(row['idx'])
+
         key = {'date': self.data_frame.iloc[0]['date']}
         if collection.count(key) > 0:
             collection.remove(key)
 
         collection.insert(data)
 
-    def __str__(self):
-        return self.to_string()
-
-    def __repr__(self):
-        return self.to_string()
+    __str__ = to_string
+    __repr__ = to_string
 
 
 # class CSVTrainReader(CSVReader):
