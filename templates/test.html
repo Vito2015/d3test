@@ -5,6 +5,9 @@
     <title></title>
 </head>
 <body>
+{% for idx, row in data.iterrows() %}
+<p>{{ idx }} - {{ row }}</p>
+{% endfor %}
 
 </body>
 </html>

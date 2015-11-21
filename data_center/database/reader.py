@@ -1,8 +1,11 @@
 # coding:utf-8
+import os, time
 import pandas as pd
 from abc import ABCMeta, abstractmethod
-from multiprocessing.dummy import Pool as ThreadPool
+# from multiprocessing.dummy import Pool as ThreadPool
+from multiprocessing import Pool
 from .import db
+from ..cache.redis_cache import RedisCache
 
 
 class MongodbReader(object, metaclass=ABCMeta):
@@ -30,11 +33,11 @@ class HeaderMongodbReader(MongodbReader):
 
     def get_header_list(self):
         header_header = 'trip,type,direction,'
-        header_item = 'stop|%s|%s|%s|%s|%s'	 # stop|station name|station id|distance|A or D
+        header_item = 'stop|%s|%s|%s|%s|%s|%s'	 # stop|station name|station id|distance|area|A or D|index
         header = header_header
         for index, row in self.data_frame.iterrows():
-            header_item1 = header_item % (row['stn_name'], row['stn_id'], row['distance'], row['area'], 'A')
-            header_item2 = header_item % (row['stn_name'], row['stn_id'], row['distance'], row['area'], 'D')
+            header_item1 = header_item % (row['stn_name'], row['stn_id'], row['distance'], row['area'], 'A', index+1)
+            header_item2 = header_item % (row['stn_name'], row['stn_id'], row['distance'], row['area'], 'D', index+1)
 
             header = header + header_item1 + ','
             header = header + header_item2 + ','
@@ -51,8 +54,13 @@ class HeaderMongodbReader(MongodbReader):
 
 class TrainPlanMongodbReader(MongodbReader):
     __collection__ = 'train_plan'
+    _type = 'PLAN'
 
     def __init__(self):
+        self._line_no = None
+        self._date = None
+        self._data_list_result = None
+        self._data_frame_result = None
         self._header_reader = HeaderMongodbReader()
         self.header = []
         self.ordered_stn = []
@@ -63,36 +71,66 @@ class TrainPlanMongodbReader(MongodbReader):
         :type line_no: str
         :type date: str
         """
+        self._line_no = line_no
+        self._date = date
         self.__load_frame__(self.__collection__, {'$and': [
             {'line_no': line_no},
             {'date': date}
         ]})
         self._load_header(line_no)
+        self._get_data()
+
+    @property
+    def data_frame_result(self):
+        return self._data_frame_result
+
+    @property
+    def data_list_result(self):
+        return self._data_list_result
+
+    def to_redis(self):
+        dfr = self.data_frame_result
+        """:type dfr: pd.DataFrame"""
+        data = dfr.to_json(orient='index')
+        RedisCache.set_data('LINE{}_{}_{}'.format(self._line_no, self._type, self._date), data)
+
+    def to_csv(self):
+        file_path = 'static/data/LINE{}_{}_{}.tcsv'.format(self._line_no, self._type, self._date)
+        self.data_frame_result.to_csv(file_path, index=False)
 
     def _load_header(self, line_no):
         self._header_reader.load_frame(line_no)
         self.header = self._header_reader.get_header_list()
         self.ordered_stn = self._header_reader.get_ascending_stations()
 
-    def get_data(self):
-        pool = ThreadPool(4)
+    def _get_data(self):
+        # pool = ThreadPool(10)
+        pool = Pool(4)
         line_trains_records = list()
-        line_trains_records.append(self.header)
+
         trip_groups = self.data_frame.groupby('trip')
 
         # for trip, train_frame in trip_groups:
         #     record_list = self._gen_row(trip, train_frame)
         #     line_trains_records.append(record_list)
 
-        results = pool.map(self._gen_row, trip_groups)
+        # results = pool.map(self._gen_row, trip_groups)
+        results = pool.map_async(self._gen_row, trip_groups).get(120)
         pool.close()
         pool.join()
         line_trains_records.extend(results)
 
-        return pd.DataFrame(line_trains_records)
+        self._data_list_result = line_trains_records
+        # self._data_list_result.append(self.header)
+        self._data_frame_result = pd.DataFrame(line_trains_records)  # , columns=self.header
+        self._data_frame_result.columns = self.header
+        dfr = self._data_frame_result
+        """:type dfr:pd.DataFrame"""
+        dfr.index = dfr['trip']
 
     def _gen_row(self, *args):
         trip, train_frame = args[0]
+        print('{} - PPID: {}-PID: {} - TRIP: {}'.format(time.time(), os.getppid(), os.getpid(), trip))
         # train_frame.iloc(0)[0]['direction']:  get first row's direction column value
         record_list = [trip, 'B', train_frame.iloc(0)[0]['direction']]
         time_list = self._gen_train_times(train_frame, self.ordered_stn)
